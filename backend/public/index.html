@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Timbre virtual · Visitante (prueba)</title>
+<style>
+:root{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#162b30;background:#f5f7f7}*{box-sizing:border-box}body{max-width:620px;margin:32px auto;padding:0 16px}main{background:#fff;border:1px solid #d9e1e3;border-radius:18px;padding:24px}h1{margin:0 0 8px}p{color:#50636b}button,input{font:inherit}button{border:0;border-radius:9px;background:#1e5552;color:#fff;padding:12px 18px;cursor:pointer}button:disabled{opacity:.45;cursor:default}input{padding:12px;border-radius:9px;border:1px solid #bccace;flex:1;min-width:0}form{display:flex;gap:8px}#messages{background:#f5f8f8;min-height:180px;max-height:340px;overflow:auto;border-radius:10px;padding:10px;margin:18px 0} .message{margin:9px 0;padding:10px;background:#fff;border-radius:9px}.admin{background:#dcedeb;margin-left:16%}.status{font-size:.88rem;color:#456770}small{color:#6b8085}#chatPanel{display:none}#error{color:#aa253a;white-space:pre-wrap}
+</style>
+</head><body><main><h1>🔔 Timbre virtual</h1><p>Prueba local del chat. Cada navegador crea una conversación privada.</p>
+<button id="create">Crear conversación</button><p id="status" class="status">Sin conversación</p><p id="error" role="alert"></p>
+<section id="chatPanel"><div id="messages" aria-live="polite"></div><form id="sendForm"><input id="text" maxlength="2000" placeholder="Escribe un mensaje..." required autocomplete="off"><button>Enviar</button></form><p><small>Esta versión actualiza los mensajes cada 2 segundos. No hay aún notificaciones ni WebSockets.</small></p></section>
+</main>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  let chatId = sessionStorage.getItem('test_chat_id');
+  let token = sessionStorage.getItem('test_chat_token');
+  let busy = false;
+  let epoch = 0;
+  let closedNotice = '';
+
+  async function api(url, opts = {}) {
+    let response;
+    try { response = await fetch(url, opts); }
+    catch { throw new Error('No hay conexión con el servidor. Prueba de nuevo.'); }
+    let data;
+    try { data = await response.json(); }
+    catch { throw new Error('Respuesta no válida del servidor'); }
+    if (!response.ok) {
+      const error = new Error(data.error || `HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  }
+
+  const auth = () => ({ Authorization: `Bearer ${token}` });
+  const showError = e => { $('error').textContent = e?.message || String(e); };
+
+  function render(messages) {
+    const box = $('messages');
+    box.replaceChildren();
+    for (const m of messages) {
+      const item = document.createElement('div');
+      item.className = 'message ' + (m.from === 'admin' ? 'admin' : '');
+      const who = document.createElement('strong');
+      who.textContent = m.from === 'admin' ? 'Responsable' : 'Visitante';
+      const body = document.createElement('div');
+      body.textContent = m.text;
+      item.append(who, body);
+      box.append(item);
+    }
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function resetClosedChat() {
+    epoch++;
+    chatId = null;
+    token = null;
+    sessionStorage.removeItem('test_chat_id');
+    sessionStorage.removeItem('test_chat_token');
+    $('chatPanel').style.display = 'none';
+    $('create').disabled = false;
+    $('messages').replaceChildren();
+    $('text').value = '';
+    $('status').textContent = 'La conversación ha sido cerrada. Puedes iniciar una nueva.';
+    $('error').textContent = '';
+  }
+
+  async function refresh() {
+    if (!chatId || !token || busy) return;
+    const requestEpoch = epoch;
+    busy = true;
+    try {
+      const d = await api(`/api/chats/${encodeURIComponent(chatId)}/messages`, {
+        headers: auth()
+      });
+      if (requestEpoch !== epoch) return;
+      render(d.messages);
+      $('status').textContent = `Chat activo: ${chatId.slice(0, 8)}…`;
+      $('error').textContent = '';
+    } catch (e) {
+      if (requestEpoch !== epoch) return;
+      if (e.status === 401 || e.status === 404) resetClosedChat();
+      else showError(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function showChat() {
+    if (!chatId || !token) return;
+    $('chatPanel').style.display = 'block';
+    $('create').disabled = true;
+    refresh();
+  }
+
+  $('create').onclick = async () => {
+    $('create').disabled = true;
+    $('error').textContent = '';
+    try {
+      const d = await api('/api/chats', { method: 'POST' });
+      epoch++;
+      chatId = d.chatId;
+      token = d.token;
+      sessionStorage.setItem('test_chat_id', chatId);
+      sessionStorage.setItem('test_chat_token', token);
+      showChat();
+    } catch (e) {
+      $('create').disabled = false;
+      showError(e);
+    }
+  };
+
+  $('sendForm').onsubmit = async e => {
+    e.preventDefault();
+    if (!chatId || !token) return;
+    const text = $('text').value.trim();
+    if (!text) return;
+    const requestEpoch = epoch;
+    try {
+      await api(`/api/chats/${encodeURIComponent(chatId)}/messages`, {
+        method: 'POST',
+        headers: { ...auth(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
+      if (requestEpoch !== epoch) return;
+      $('text').value = '';
+      await refresh();
+    } catch (err) {
+      if (requestEpoch !== epoch) return;
+      if (err.status === 401 || err.status === 404) resetClosedChat();
+      else showError(err);
+    }
+  };
+
+  showChat();
+  setInterval(() => { if (!document.hidden) refresh(); }, 2000);
+})();
+</script></body></html>
